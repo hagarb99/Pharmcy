@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dawatech_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: dawatech
+      POSTGRES_PASSWORD: dawatech_password
+      POSTGRES_DB: dawatech_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dawatech -d dawatech_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: dawatech_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dawatech_backend
+    restart: always
+    environment:
+      ENV: development
+      DEBUG: "True"
+      DATABASE_URL: postgresql+asyncpg://dawatech:dawatech_password@postgres:5432/dawatech_db
+      SYNC_DATABASE_URL: postgresql+psycopg2://dawatech:dawatech_password@postgres:5432/dawatech_db
+      SECRET_KEY: super-secret-dawa-tech-dev-key-change-in-production
+      FIRST_SUPERUSER_EMAIL: admin@dawatech.com
+      FIRST_SUPERUSER_PASSWORD: AdminPassword123!
+      FIRST_SUPERUSER_PHONE: "+201000000001"
+      CORS_ORIGINS: '["http://localhost:5173","http://127.0.0.1:5173","http://localhost:3000"]'
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dawatech_frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000/api/v1
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
