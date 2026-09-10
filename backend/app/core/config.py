@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
 
+    # Marketplace Settings
+    REQUEST_RESPONSE_TIMEOUT_MINUTES: int = 15
+    DEFAULT_SERVICE_RADIUS_KM: float = 5.0
+
     # CORS
     CORS_ORIGINS: Union[List[str], str] = [
         "http://localhost:5173",

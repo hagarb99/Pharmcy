@@ -87,3 +87,13 @@ async def active_orders_guard_test(
         "message": f"صيدلية {pharmacy.name} معتمدة ومؤهلة لاستقبال الطلبات.",
         "verification_status": pharmacy.verification_status,
     }
+
+
+@router.get("/incoming-requests")
+async def incoming_requests_alias(
+    pharmacy: Pharmacy = Depends(get_current_verified_pharmacy),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.api.v1.quotes import get_incoming_requests_for_pharmacy
+    return await get_incoming_requests_for_pharmacy(pharmacy=pharmacy, db=db)
+

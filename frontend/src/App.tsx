@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { WebSocketProvider } from './context/WebSocketContext';
 import { Navbar } from './components/layout/Navbar';
 import { Footer } from './components/layout/Footer';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
@@ -18,9 +19,10 @@ export const App: React.FC = () => {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <div className="app-container">
-          <Navbar />
-          <main className="main-content">
+        <WebSocketProvider>
+          <div className="app-container">
+            <Navbar />
+            <main className="main-content">
             <Routes>
               {/* Public Routes */}
               <Route path="/" element={<Home />} />
@@ -65,6 +67,7 @@ export const App: React.FC = () => {
           </main>
           <Footer />
         </div>
+        </WebSocketProvider>
       </AuthProvider>
     </BrowserRouter>
   );
