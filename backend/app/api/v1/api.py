@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import admin, auth, orders, pharmacies, quotes, requests, users, ws
+from app.api.v1 import admin, auth, orders, pharmacies, quotes, requests, uploads, users, ws
 
 api_router = APIRouter()
 
@@ -11,4 +11,5 @@ api_router.include_router(admin.router, prefix="/admin", tags=["لوحة تحك�
 api_router.include_router(requests.router, prefix="/requests", tags=["طلبات الأدوية (Requests)"])
 api_router.include_router(quotes.router, prefix="/quotes", tags=["عروض الأسعار (Quotes)"])
 api_router.include_router(orders.router, prefix="/orders", tags=["الأوامر المؤكدة (Orders)"])
+api_router.include_router(uploads.router, prefix="/uploads", tags=["رفع الملفات والروشتات (Uploads)"])
 api_router.include_router(ws.router, tags=["الاتصال اللحظي (WebSockets)"])

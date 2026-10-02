@@ -61,6 +61,8 @@ async def get_incoming_requests_for_pharmacy(
                     location_label=req.location_label,
                     distance_km=dist,
                     notes=req.notes,
+                    prescription_image_filename=req.prescription_image_filename,
+                    has_prescription_image=bool(req.prescription_image_filename),
                     created_at=req.created_at,
                     items=[
                         DrugItemOut(

@@ -25,7 +25,8 @@ class DrugItemOut(BaseModel):
 
 
 class PrescriptionRequestCreate(BaseModel):
-    items: List[DrugItemCreate] = Field(..., min_length=1, description="قائمة الأدوية المطلوبة")
+    items: List[DrugItemCreate] = Field(default_factory=list, description="قائمة الأدوية المطلوبة")
+    prescription_image_filename: Optional[str] = Field(None, description="اسم ملف صورة الروشتة المرفوعة")
     lat: Optional[float] = Field(None, description="خط العرض لموقع الطلب")
     lng: Optional[float] = Field(None, description="خط الطول لموقع الطلب")
     location_label: Optional[str] = Field(None, description="اسم الحي أو المنطقة")
@@ -42,6 +43,8 @@ class PrescriptionRequestOut(BaseModel):
     location_label: Optional[str]
     delivery_preference: DeliveryPreference
     notes: Optional[str]
+    prescription_image_filename: Optional[str] = None
+    has_prescription_image: bool = False
     created_at: datetime
     updated_at: datetime
     items: List[DrugItemOut]
@@ -60,6 +63,8 @@ class NearbyRequestForPharmacy(BaseModel):
     location_label: Optional[str]
     distance_km: float
     notes: Optional[str]
+    prescription_image_filename: Optional[str] = None
+    has_prescription_image: bool = False
     created_at: datetime
     items: List[DrugItemOut]
     has_my_quote: bool = False

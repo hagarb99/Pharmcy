@@ -11,6 +11,7 @@ __all__ = [
     "QuoteStatus",
     "OrderStatus",
     "DeliveryOption",
+    "ChangeRequestStatus",
 ]
 
 
@@ -65,3 +66,9 @@ class OrderStatus(str, enum.Enum):
 class DeliveryOption(str, enum.Enum):
     PICKUP = "pickup"
     DELIVERY = "delivery"
+
+
+class ChangeRequestStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"

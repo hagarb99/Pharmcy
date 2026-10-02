@@ -18,6 +18,8 @@ export interface PrescriptionRequest {
   location_label?: string;
   delivery_preference: 'pickup_only' | 'delivery_preferred' | 'any';
   notes?: string;
+  prescription_image_filename?: string;
+  has_prescription_image?: boolean;
   created_at: string;
   updated_at: string;
   items: DrugItem[];
@@ -63,6 +65,8 @@ export interface NearbyRequestForPharmacy {
   location_label?: string;
   distance_km: number;
   notes?: string;
+  prescription_image_filename?: string;
+  has_prescription_image?: boolean;
   created_at: string;
   items: DrugItem[];
   has_my_quote: boolean;
@@ -94,6 +98,7 @@ export const marketplaceApi = {
   // Patient endpoints
   createRequest: async (payload: {
     items: { drug_name: string; dosage?: string; quantity: number; notes?: string }[];
+    prescription_image_filename?: string;
     lat?: number;
     lng?: number;
     location_label?: string;
@@ -102,6 +107,28 @@ export const marketplaceApi = {
   }): Promise<PrescriptionRequest> => {
     const res = await apiClient.post<PrescriptionRequest>('/requests', payload);
     return res.data;
+  },
+
+  uploadPrescriptionImage: async (
+    file: File
+  ): Promise<{ filename: string; content_type: string; size_bytes: number }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await apiClient.post<{ filename: string; content_type: string; size_bytes: number }>(
+      '/uploads/prescription',
+      formData,
+      {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      }
+    );
+    return res.data;
+  },
+
+  fetchPrescriptionImageBlob: async (requestId: string): Promise<string> => {
+    const res = await apiClient.get(`/requests/${requestId}/prescription-image`, {
+      responseType: 'blob',
+    });
+    return URL.createObjectURL(res.data);
   },
 
   getMyRequests: async (): Promise<PrescriptionRequest[]> => {

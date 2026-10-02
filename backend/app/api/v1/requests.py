@@ -2,7 +2,10 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,7 +13,16 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_active_user, get_db, require_role
 from app.core.config import settings
 from app.core.websocket_manager import ws_manager
-from app.models.base import DeliveryOption, DeliveryPreference, OrderStatus, QuoteStatus, RequestStatus, UserRole
+from app.services.audit_service import AuditService
+from app.models.base import (
+    DeliveryOption,
+    DeliveryPreference,
+    OrderStatus,
+    PharmacyVerificationStatus,
+    QuoteStatus,
+    RequestStatus,
+    UserRole,
+)
 from app.models.order import Order
 from app.models.pharmacy import Pharmacy
 from app.models.quote import PharmacyQuote, QuoteItem
@@ -27,6 +39,9 @@ from app.services.geo import get_nearby_verified_pharmacies, haversine_distance_
 router = APIRouter()
 
 
+STORAGE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "storage" / "prescriptions"
+
+
 def _calculate_timeout_info(created_at: datetime, quotes_count: int) -> tuple[bool, datetime]:
     timeout_at = created_at + timedelta(minutes=settings.REQUEST_RESPONSE_TIMEOUT_MINUTES)
     has_timed_out = datetime.now(timezone.utc) >= timeout_at and quotes_count == 0
@@ -41,9 +56,16 @@ async def create_request(
 ):
     """
     Create a new prescription / medicine request.
+    Supports either manual item entry or uploaded prescription image (or both).
     Automatically captures user coordinates, matches nearby verified pharmacies,
     and broadcasts a real-time WebSocket alert to them.
     """
+    if not payload.items and not payload.prescription_image_filename:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="يجب إدخال صنف دوائي واحد على الأقل أو إرفاق صورة الروشتة الطبية.",
+        )
+
     lat = payload.lat or current_user.lat or 30.0444
     lng = payload.lng or current_user.lng or 31.2357
     loc_label = payload.location_label or current_user.location or "موقعي الحالي"
@@ -56,19 +78,31 @@ async def create_request(
         location_label=loc_label,
         delivery_preference=payload.delivery_preference,
         notes=payload.notes,
+        prescription_image_filename=payload.prescription_image_filename,
     )
     db.add(new_request)
     await db.flush()
 
-    for item_data in payload.items:
-        drug_item = DrugItem(
+    if payload.items:
+        for item_data in payload.items:
+            drug_item = DrugItem(
+                request_id=new_request.id,
+                drug_name=item_data.drug_name.strip(),
+                dosage=item_data.dosage.strip() if item_data.dosage else None,
+                quantity=item_data.quantity,
+                notes=item_data.notes.strip() if item_data.notes else None,
+            )
+            db.add(drug_item)
+    else:
+        # Relational fallback item for image-only requests
+        fallback_item = DrugItem(
             request_id=new_request.id,
-            drug_name=item_data.drug_name.strip(),
-            dosage=item_data.dosage.strip() if item_data.dosage else None,
-            quantity=item_data.quantity,
-            notes=item_data.notes.strip() if item_data.notes else None,
+            drug_name="روشتة طبية مصورة (مرفقة بالصورة)",
+            dosage=None,
+            quantity=1,
+            notes="يرجى مراجعة صورة الروشتة الطبية المرفقة لتحديد الأصناف والأسعار",
         )
-        db.add(drug_item)
+        db.add(fallback_item)
 
     await db.commit()
 
@@ -94,6 +128,7 @@ async def create_request(
                 "location_label": loc_label,
                 "items_count": len(saved_request.items),
                 "delivery_preference": saved_request.delivery_preference.value,
+                "has_prescription_image": bool(saved_request.prescription_image_filename),
             },
         )
 
@@ -108,6 +143,8 @@ async def create_request(
         location_label=saved_request.location_label,
         delivery_preference=saved_request.delivery_preference,
         notes=saved_request.notes,
+        prescription_image_filename=saved_request.prescription_image_filename,
+        has_prescription_image=bool(saved_request.prescription_image_filename),
         created_at=saved_request.created_at,
         updated_at=saved_request.updated_at,
         items=saved_request.items,
@@ -149,6 +186,8 @@ async def get_my_requests(
                 location_label=req.location_label,
                 delivery_preference=req.delivery_preference,
                 notes=req.notes,
+                prescription_image_filename=req.prescription_image_filename,
+                has_prescription_image=bool(req.prescription_image_filename),
                 created_at=req.created_at,
                 updated_at=req.updated_at,
                 items=req.items,
@@ -237,6 +276,8 @@ async def get_request_detail(
         "location_label": req.location_label,
         "delivery_preference": req.delivery_preference,
         "notes": req.notes,
+        "prescription_image_filename": req.prescription_image_filename,
+        "has_prescription_image": bool(req.prescription_image_filename),
         "created_at": req.created_at,
         "updated_at": req.updated_at,
         "items": req.items,
@@ -245,6 +286,81 @@ async def get_request_detail(
         "timeout_at": timeout_at,
         "order_id": req.order.id if req.order else None,
     }
+
+
+@router.get("/{request_id}/prescription-image")
+async def get_prescription_image(
+    request_id: uuid.UUID,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Securely stream the prescription image file for an authorized requester.
+    Strictly restricted to:
+    1. The patient who created the request.
+    2. A verified pharmacy within the request's service radius or with a quote.
+    3. An administrator.
+    Every access is logged in the AuditLog trail for medical data compliance (FR-29, NFR-02).
+    """
+    stmt = (
+        select(PrescriptionRequest)
+        .options(selectinload(PrescriptionRequest.quotes))
+        .where(PrescriptionRequest.id == request_id)
+    )
+    res = await db.execute(stmt)
+    req = res.scalar_one_or_none()
+    if not req:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="الطلب غير موجود")
+
+    if not req.prescription_image_filename:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="لا توجد صورة روشتة مرفقة لهذا الطلب")
+
+    # Authorization Check
+    is_authorized = False
+    details_context = {"role": current_user.role.value, "request_id": str(request_id)}
+
+    if current_user.role == UserRole.ADMIN:
+        is_authorized = True
+    elif current_user.role == UserRole.PATIENT:
+        if req.patient_id == current_user.id:
+            is_authorized = True
+    elif current_user.role == UserRole.PHARMACY:
+        p_stmt = select(Pharmacy).where(Pharmacy.user_id == current_user.id)
+        p_res = await db.execute(p_stmt)
+        pharmacy = p_res.scalar_one_or_none()
+        if pharmacy and pharmacy.verification_status == PharmacyVerificationStatus.VERIFIED:
+            has_quote = any(q.pharmacy_id == pharmacy.id for q in req.quotes)
+            dist = haversine_distance_km(req.lat, req.lng, pharmacy.lat, pharmacy.lng)
+            if has_quote or dist <= pharmacy.service_radius_km:
+                is_authorized = True
+                details_context["pharmacy_id"] = str(pharmacy.id)
+                details_context["pharmacy_name"] = pharmacy.name
+
+    if not is_authorized:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="غير مصرح لك بالاطلاع على صورة الروشتة الطبية لهذا الطلب",
+        )
+
+    # Mandatory Audit Log for health data access (FR-29, NFR-02)
+    await AuditService.log_event(
+        db=db,
+        action="PRESCRIPTION_IMAGE_VIEWED",
+        target=f"request:{req.id}",
+        user_id=current_user.id,
+        ip=request.client.host if request.client else None,
+        metadata_json=details_context,
+    )
+
+    file_path = STORAGE_DIR / req.prescription_image_filename
+    if not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="ملف الروشتة غير موجود على الخادم")
+
+    return FileResponse(
+        path=str(file_path),
+        headers={"Cache-Control": "private, no-store, must-revalidate"},
+    )
 
 
 @router.post("/{request_id}/select-quote", response_model=OrderOut)

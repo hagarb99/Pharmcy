@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useWebSocket } from '../../context/WebSocketContext';
 import { apiClient } from '../../api/client';
 import { marketplaceApi, type NearbyRequestForPharmacy, type Order } from '../../api/marketplace';
+import { pharmacyApi, type PharmacyProfileData } from '../../api/pharmacy';
 import {
   Building2,
   ShieldCheck,
@@ -18,6 +19,10 @@ import {
   Truck,
   ArrowRight,
   Sparkles,
+  FileEdit,
+  Navigation,
+  Eye,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface QuoteItemInput {
@@ -57,6 +62,122 @@ export const PharmacyDashboard: React.FC = () => {
   const [deliveryFee, setDeliveryFee] = useState<number>(15.0);
   const [quoteNotes, setQuoteNotes] = useState<string>('');
   const [isSubmittingQuote, setIsSubmittingQuote] = useState<boolean>(false);
+
+  // Prescription Image viewing modal state
+  const [inspectingImageUrl, setInspectingImageUrl] = useState<string | null>(null);
+  const [inspectingRequestTitle, setInspectingRequestTitle] = useState<string | null>(null);
+
+  // Profile and Settings modal state
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+  const [profileData, setProfileData] = useState<PharmacyProfileData | null>(null);
+  const [profileName, setProfileName] = useState<string>('');
+  const [profilePhone, setProfilePhone] = useState<string>('');
+  const [profileAddress, setProfileAddress] = useState<string>('');
+  const [profileLat, setProfileLat] = useState<number | undefined>(undefined);
+  const [profileLng, setProfileLng] = useState<number | undefined>(undefined);
+  const [profileDelivery, setProfileDelivery] = useState<boolean>(false);
+  const [profileRadius, setProfileRadius] = useState<number>(5.0);
+  const [isSavingProfile, setIsSavingProfile] = useState<boolean>(false);
+  const [isLoadingProfile, setIsLoadingProfile] = useState<boolean>(false);
+  const [profileFeedbackMsg, setProfileFeedbackMsg] = useState<string | null>(null);
+  const [profileFeedbackError, setProfileFeedbackError] = useState<string | null>(null);
+
+  const handleOpenProfileModal = async () => {
+    setIsProfileModalOpen(true);
+    setProfileFeedbackMsg(null);
+    setProfileFeedbackError(null);
+    setIsLoadingProfile(true);
+
+    // 1. Immediately pre-fill with existing pharmacy/user data so the inputs are never blank:
+    if (pharmacy) {
+      setProfileName(pharmacy.name || '');
+      setProfilePhone(pharmacy?.user?.phone || user?.phone || '');
+      setProfileAddress(pharmacy.address || '');
+      setProfileLat(pharmacy.lat);
+      setProfileLng(pharmacy.lng);
+      setProfileDelivery(pharmacy.delivery_available ?? false);
+      setProfileRadius(pharmacy.service_radius_km ?? 5.0);
+    } else if (user?.phone) {
+      setProfilePhone(user.phone);
+    }
+
+    // 2. Fetch fresh profile & pending requests from backend:
+    try {
+      const data = await pharmacyApi.getMyProfile();
+      setProfileData(data);
+      if (data.name) setProfileName(data.name);
+      if (data.phone) setProfilePhone(data.phone);
+      if (data.address) setProfileAddress(data.address);
+      if (data.lat !== undefined && data.lat !== null) setProfileLat(data.lat);
+      if (data.lng !== undefined && data.lng !== null) setProfileLng(data.lng);
+      if (data.delivery_available !== undefined) setProfileDelivery(data.delivery_available);
+      if (data.service_radius_km !== undefined) setProfileRadius(data.service_radius_km);
+    } catch (err: any) {
+      console.error('Failed to load pharmacy profile:', err);
+    } finally {
+      setIsLoadingProfile(false);
+    }
+  };
+
+  const handleDetectProfileLocation = () => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition((pos) => {
+      setProfileLat(pos.coords.latitude);
+      setProfileLng(pos.coords.longitude);
+    });
+  };
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingProfile(true);
+    setProfileFeedbackMsg(null);
+    setProfileFeedbackError(null);
+
+    // Build payload with only sanitized non-empty fields:
+    const payload: any = {
+      delivery_available: profileDelivery,
+      service_radius_km: profileRadius,
+    };
+    if (profileName && profileName.trim()) {
+      payload.name = profileName.trim();
+    }
+    if (profilePhone && profilePhone.trim()) {
+      payload.phone = profilePhone.trim();
+    }
+    if (profileAddress && profileAddress.trim()) {
+      payload.address = profileAddress.trim();
+    }
+    if (profileLat !== undefined && profileLat !== null) payload.lat = profileLat;
+    if (profileLng !== undefined && profileLng !== null) payload.lng = profileLng;
+
+    try {
+      const res = await pharmacyApi.updateMyProfile(payload);
+      setProfileFeedbackMsg(res.message);
+      await refreshProfile();
+      const updated = await pharmacyApi.getMyProfile();
+      setProfileData(updated);
+    } catch (err: any) {
+      let detail = err.response?.data?.detail;
+      if (Array.isArray(detail)) {
+        detail = detail.map((d: any) => d.msg || JSON.stringify(d)).join(' - ');
+      } else if (typeof detail === 'object' && detail !== null) {
+        detail = JSON.stringify(detail);
+      }
+      setProfileFeedbackError(detail || 'حدث خطأ أثناء حفظ التعديلات.');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleViewPrescriptionImage = async (reqId: string, patientName: string) => {
+    setInspectingRequestTitle(`روشتة المريض: ${patientName}`);
+    try {
+      const blobUrl = await marketplaceApi.fetchPrescriptionImageBlob(reqId);
+      setInspectingImageUrl(blobUrl);
+    } catch (err: any) {
+      alert(err.response?.data?.detail || 'فشل تحميل صورة الروشتة أو لا تملك صلاحية الوصول.');
+    }
+  };
 
   const fetchPharmacyMarketplaceData = async () => {
     if (!isVerified) return;
@@ -290,7 +411,16 @@ export const PharmacyDashboard: React.FC = () => {
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={handleOpenProfileModal}
+              className="btn btn-sm"
+              style={{ background: 'white', color: '#0f172a', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              <FileEdit size={15} />
+              <span>إعدادات وتعديل بيانات الصيدلية</span>
+            </button>
+
             <button
               onClick={() => {
                 refreshProfile();
@@ -431,6 +561,43 @@ export const PharmacyDashboard: React.FC = () => {
                         </span>
                       )}
                     </div>
+
+                    {/* Prescription Image Inspection Badge & Action */}
+                    {req.has_prescription_image && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          background: '#fdf4ff',
+                          border: '1px solid #f0abfc',
+                          padding: '0.6rem 0.85rem',
+                          borderRadius: 'var(--radius-sm)',
+                          marginBottom: '0.75rem',
+                        }}
+                      >
+                        <span style={{ fontSize: '0.85rem', color: '#86198f', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          📸 مرفق صورة روشتة طبية من المريض
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleViewPrescriptionImage(req.id, req.patient_name)}
+                          className="btn btn-sm"
+                          style={{
+                            background: '#86198f',
+                            color: 'white',
+                            fontWeight: 700,
+                            padding: '0.35rem 0.85rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                          }}
+                        >
+                          <Eye size={15} />
+                          <span>معاينة وتكبير الروشتة</span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Drugs Requested */}
                     <div style={{ background: 'var(--slate-50)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', marginBottom: '1rem' }}>
@@ -834,6 +1001,292 @@ export const PharmacyDashboard: React.FC = () => {
                 >
                   <Send size={16} />
                   <span>{isSubmittingQuote ? 'جاري الإرسال...' : 'إرسال التسعيرة للمريض'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Prescription Image Lightbox Inspection */}
+      {inspectingImageUrl && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 2000,
+            padding: '1.5rem',
+            backdropFilter: 'blur(6px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '850px',
+              width: '100%',
+              maxHeight: '92vh',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'white',
+              position: 'relative',
+              padding: '1.5rem',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--slate-200)', paddingBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ fontSize: '1.25rem', fontWeight: 800, margin: 0, color: 'var(--slate-900)' }}>
+                  {inspectingRequestTitle || 'معاينة الروشتة الطبية'}
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--slate-500)', margin: 0 }}>
+                  تم جلب الصورة عبر اتصال مشفر وآمن مقتصر على الصيدليات المرخصة في نطاق التغطية
+                </p>
+              </div>
+              <button
+                onClick={() => setInspectingImageUrl(null)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--slate-500)' }}
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', textAlign: 'center', background: '#f8fafc', borderRadius: 'var(--radius-md)', padding: '1rem' }}>
+              <img
+                src={inspectingImageUrl}
+                alt="صورة الروشتة الطبية"
+                style={{ maxWidth: '100%', maxHeight: '68vh', objectFit: 'contain', borderRadius: 'var(--radius-sm)', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1rem', paddingTop: '0.75rem', borderTop: '1px solid var(--slate-200)' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--slate-500)' }}>
+                💡 يمكنك قراءة أسماء الأدوية المكتوبة بخط الطبيب وإدخال أسعارها وبدائلها في نافذة التسعير.
+              </span>
+              <button
+                onClick={() => setInspectingImageUrl(null)}
+                className="btn btn-primary btn-sm"
+              >
+                إغلاق المعاينة
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Pharmacy Profile & Sensitive Change Request Settings */}
+      {isProfileModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1500,
+            padding: '1rem',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '680px',
+              width: '100%',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              background: 'white',
+              position: 'relative',
+              padding: '1.75rem',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid var(--slate-200)', paddingBottom: '0.75rem' }}>
+              <div>
+                <h3 style={{ fontSize: '1.3rem', fontWeight: 800, margin: 0, color: 'var(--slate-900)' }}>
+                  إدارة وتعديل بيانات ملف الصيدلية
+                </h3>
+                <p style={{ fontSize: '0.82rem', color: 'var(--slate-500)', margin: 0 }}>
+                  تحديث البيانات التشغيلية الفورية وطلب تعديل البيانات الحساسة المعتمدة
+                </p>
+              </div>
+              <button
+                onClick={() => setIsProfileModalOpen(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--slate-400)' }}
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            {isLoadingProfile && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#eff6ff', color: '#1d4ed8', padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-sm)', fontSize: '0.82rem', marginBottom: '1rem' }}>
+                <RefreshCw size={14} className="spin" />
+                <span>جاري مزامنة أحدث بيانات الصيدلية...</span>
+              </div>
+            )}
+
+            {profileFeedbackMsg && (
+              <div className="alert alert-success" style={{ marginBottom: '1.25rem' }}>
+                <CheckCircle2 size={18} />
+                <span>{profileFeedbackMsg}</span>
+              </div>
+            )}
+
+            {profileFeedbackError && (
+              <div className="alert alert-danger" style={{ marginBottom: '1.25rem' }}>
+                <AlertTriangle size={18} />
+                <span>{profileFeedbackError}</span>
+              </div>
+            )}
+
+            {/* Existing Pending Change Requests Warning */}
+            {profileData?.pending_change_requests && profileData.pending_change_requests.length > 0 && (
+              <div
+                style={{
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  color: '#92400e',
+                  padding: '0.85rem 1rem',
+                  borderRadius: 'var(--radius-md)',
+                  marginBottom: '1.25rem',
+                  fontSize: '0.85rem',
+                }}
+              >
+                <strong style={{ display: 'block', marginBottom: '0.25rem' }}>
+                  ⏳ لديك طلبات تعديل بيانات قيد مراجعة المشرف حالياً:
+                </strong>
+                <ul style={{ margin: 0, paddingRight: '1.25rem' }}>
+                  {profileData.pending_change_requests.map((cr) => (
+                    <li key={cr.id}>
+                      <strong>{cr.field_name === 'phone' ? 'رقم الهاتف' : cr.field_name === 'address_and_coordinates' ? 'الموقع والعنوان' : 'الاسم التجاري'}</strong>: من ({cr.old_value}) إلى ({cr.new_value})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveProfile}>
+              {/* Commercial Name */}
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>اسم الصيدلية التجاري</label>
+                  <span style={{ fontSize: '0.72rem', color: '#6366f1', background: '#e0e7ff', padding: '0.1rem 0.45rem', borderRadius: '4px', fontWeight: 700 }}>
+                    يتطلب موافقة المشرف
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={profileName}
+                  onChange={(e) => setProfileName(e.target.value)}
+                  placeholder="اسم الصيدلية"
+                  required
+                />
+              </div>
+
+              {/* Official Phone Number */}
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>رقم هاتف التواصل والواتساب الرسمي</label>
+                  <span style={{ fontSize: '0.72rem', color: '#6366f1', background: '#e0e7ff', padding: '0.1rem 0.45rem', borderRadius: '4px', fontWeight: 700 }}>
+                    يتطلب موافقة المشرف
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={profilePhone}
+                  onChange={(e) => setProfilePhone(e.target.value)}
+                  placeholder="مثال: 01012345678 أو +201012345678"
+                  required
+                />
+              </div>
+
+              {/* Address and GPS */}
+              <div className="form-group" style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                  <label className="form-label" style={{ margin: 0 }}>عنوان مقر الصيدلية الفعلي</label>
+                  <span style={{ fontSize: '0.72rem', color: '#6366f1', background: '#e0e7ff', padding: '0.1rem 0.45rem', borderRadius: '4px', fontWeight: 700 }}>
+                    يتطلب موافقة المشرف
+                  </span>
+                </div>
+                <textarea
+                  className="form-textarea"
+                  rows={2}
+                  value={profileAddress}
+                  onChange={(e) => setProfileAddress(e.target.value)}
+                  placeholder="العنوان التفصيلي، الحي، الشارع، علامة مميزة"
+                  required
+                />
+              </div>
+
+              {/* Coordinates */}
+              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
+                <div style={{ padding: '0.6rem 0.9rem', background: 'var(--slate-100)', borderRadius: 'var(--radius-sm)', fontSize: '0.85rem' }}>
+                  <span>Lat: <strong>{profileLat ? profileLat.toFixed(4) : '...'}</strong></span> | <span>Lng: <strong>{profileLng ? profileLng.toFixed(4) : '...'}</strong></span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleDetectProfileLocation}
+                  className="btn btn-outline btn-sm"
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                >
+                  <Navigation size={14} />
+                  <span>تحديث GPS الآن</span>
+                </button>
+              </div>
+
+              <hr style={{ border: 0, borderTop: '1px solid var(--slate-200)', margin: '1.25rem 0' }} />
+
+              {/* Operational Fields (Immediate Update) */}
+              <h4 style={{ fontSize: '0.95rem', fontWeight: 800, marginBottom: '0.75rem', color: 'var(--primary-700)' }}>
+                ⚡ إعدادات تشغيلية فورية (تتحدث لحظياً دون انتظار):
+              </h4>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.25rem' }}>
+                <div>
+                  <label className="form-label">نطاق التغطية الجغرافية (كم)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="50"
+                    className="form-input"
+                    value={profileRadius}
+                    onChange={(e) => setProfileRadius(parseFloat(e.target.value) || 5.0)}
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--slate-500)' }}>الحد الأقصى لاستقبال الطلبات</span>
+                </div>
+
+                <div>
+                  <label className="form-label">خدمة التوصيل المنزلي العامة</label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}>
+                    <input
+                      type="checkbox"
+                      checked={profileDelivery}
+                      onChange={(e) => setProfileDelivery(e.target.checked)}
+                    />
+                    <span>إتاحة التوصيل للطلبات</span>
+                  </label>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsProfileModalOpen(false)}
+                  className="btn btn-outline"
+                >
+                  إغلاق
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingProfile}
+                  className="btn btn-primary"
+                  style={{ fontWeight: 800 }}
+                >
+                  {isSavingProfile ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                 </button>
               </div>
             </form>
